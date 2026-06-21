@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/RedHuang-0622/TemplatePoolByGO/actions/workflows/ci.yml/badge.svg)](https://github.com/RedHuang-0622/TemplatePoolByGO/actions/workflows/ci.yml)
 
-基于 Go 泛型的通用连接池，管理 gRPC stream、数据库连接、TCP 长连接等重资源。
+基于 Go 泛型的通用资源池，管理 gRPC stream、数据库连接、TCP 长连接等重资源。
 
 ```bash
 go get github.com/RedHuang-0622/TemplatePoolByGO@latest
