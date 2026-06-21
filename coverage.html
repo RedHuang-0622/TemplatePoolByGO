@@ -1,0 +1,1418 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>TemplatePoolByGO: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/RedHuang-0622/TemplatePoolByGO/config.go (100.0%)</option>
+				
+				<option value="file1">github.com/RedHuang-0622/TemplatePoolByGO/model.go (93.4%)</option>
+				
+				<option value="file2">github.com/RedHuang-0622/TemplatePoolByGO/pool_manager.go (86.2%)</option>
+				
+				<option value="file3">github.com/RedHuang-0622/TemplatePoolByGO/pool_test/example.go (0.0%)</option>
+				
+				<option value="file4">github.com/RedHuang-0622/TemplatePoolByGO/util/Closure/closure.go (96.3%)</option>
+				
+				<option value="file5">github.com/RedHuang-0622/TemplatePoolByGO/util/request_queue/request_queue.go (93.3%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">no coverage</span>
+				<span class="cov1">low coverage</span>
+				<span class="cov2">*</span>
+				<span class="cov3">*</span>
+				<span class="cov4">*</span>
+				<span class="cov5">*</span>
+				<span class="cov6">*</span>
+				<span class="cov7">*</span>
+				<span class="cov8">*</span>
+				<span class="cov9">*</span>
+				<span class="cov10">high coverage</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">package pool
+
+import "time"
+
+// Resource 资源包装器（导出供测试使用）
+type Resource[T any] struct {
+        ID         string
+        createTime time.Time
+        updateTime time.Time
+        Conn       T
+        retryCount int // 重连次数
+}
+
+// 内部使用 resource 作为别名
+type resource[T any] = Resource[T]
+
+type PoolConfig struct {
+        MinSize          int64
+        MaxSize          int64
+        SurviveTime      time.Duration
+        MonitorInterval  time.Duration
+        IdleBufferFactor float64 // channel 缓冲系数
+
+        // 等待队列配置
+        MaxWaitQueue int64 // 新增，建议默认值 10000
+
+        // 重连配置
+        MaxRetries     int           // 最大重试次数
+        RetryInterval  time.Duration // 重试间隔
+        ReconnectOnGet bool          // Get 时是否自动重连失效资源
+
+        // 心跳配置
+        PingInterval time.Duration   // 定期 Ping 连接的间隔
+        OnUnhealthy  func(err error) // 回调钩子
+}
+
+func DefaultPoolConfig() PoolConfig <span class="cov10" title="24">{
+        return PoolConfig{
+                MinSize:          5,
+                MaxSize:          100,
+                SurviveTime:      30 * time.Minute,
+                MonitorInterval:  10 * time.Second,
+                IdleBufferFactor: 1.0,
+                MaxRetries:       3,
+                RetryInterval:    1 * time.Second,
+                ReconnectOnGet:   false, // Get 时 Ping 失败是否自动重连（默认关闭，避免热路径开销）
+                PingInterval:     30 * time.Second,
+                OnUnhealthy:      nil,
+                MaxWaitQueue:     10000,
+        }
+}</span>
+
+type Conn[T any] interface {
+        Reset(T) error
+        Close(T) error
+        Create() (T, error)
+        Ping(T) error
+}
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">package pool
+
+import (
+        "context"
+        "errors"
+        "fmt"
+        "log"
+        "sync/atomic"
+        "time"
+
+        closure "github.com/RedHuang-0622/TemplatePoolByGO/util/Closure"
+        "github.com/RedHuang-0622/TemplatePoolByGO/util/request_queue"
+)
+
+type Pool[T any] struct {
+        resources        chan *resource[T]
+        inUse            atomic.Int64
+        totalSize        atomic.Int64
+        manager          *closure.Closure[PoolManagerState[T], *PoolManagerActor[T]]
+        waitQueue        *request_queue.LockFreeQueue[*resource[T]]
+        closeCtx         context.Context
+        cancel           context.CancelFunc
+        config           PoolConfig
+        lastExpandNotify atomic.Int64
+        expanding        atomic.Int64
+        connControl      Conn[T]
+}
+
+// 定义连接池相关的导出错误
+var (
+        ErrPoolBusy = errors.New("connection pool is busy: maximum capacity reached and wait queue is full")
+)
+
+func NewPool[T any](config PoolConfig, connControl Conn[T]) *Pool[T] <span class="cov5" title="50">{
+        ctx, cancel := context.WithCancel(context.Background())
+
+        // ===== 修复点 1：buffer 大小的正确计算 =====
+        // IdleBufferFactor 的真实含义：允许多少比例的连接处于空闲状态
+        // 例如：MaxSize=500, IdleBufferFactor=0.4
+        //   → buffer 只需容纳 200 个空闲连接
+        //   → 但 totalSize 可以达到 500（另外 300 个在使用中）
+        //
+        // 关键：buffer 不应该限制 totalSize，只是控制内存占用！
+        bufferSize := int(float64(config.MaxSize) * config.IdleBufferFactor)
+        if bufferSize &lt; 1 </span><span class="cov3" title="9">{
+                bufferSize = 1 // 防止 IdleBufferFactor=0 时创建无缓冲 channel 导致死锁
+        }</span>
+
+        <span class="cov5" title="50">p := &amp;Pool[T]{
+                resources:        make(chan *resource[T], bufferSize),
+                waitQueue:        request_queue.NewLockFreeQueue[*resource[T]](),
+                cancel:           cancel,
+                config:           config,
+                lastExpandNotify: atomic.Int64{},
+                expanding:        atomic.Int64{},
+                closeCtx:         ctx,
+                connControl:      connControl,
+        }
+
+        actor := NewPoolManagerActor(config, connControl, &amp;p.totalSize, p.waitQueue, &amp;p.expanding)
+        p.manager = closure.New(actor, closure.WithInboxSize(1000))
+        actor.sharedResources = p.resources
+        actor.manager = p.manager
+
+        go p.preInit(config.MinSize, connControl)
+        if config.PingInterval &gt; 0 </span><span class="cov1" title="2">{
+                go p.pingIdleResources(p.closeCtx)
+        }</span>
+        <span class="cov5" title="50">if config.MonitorInterval &gt; 0 </span><span class="cov1" title="2">{
+                go p.monitorAndAdjust(p.closeCtx)
+        }</span>
+        <span class="cov5" title="50">return p</span>
+}
+
+func (p *Pool[T]) pingIdleResources(ctx context.Context) <span class="cov1" title="2">{
+        interval := p.config.PingInterval
+        if p.config.PingInterval &lt;= 0 </span><span class="cov0" title="0">{
+                return // 明确禁用
+        }</span>
+        <span class="cov1" title="2">ticker := time.NewTicker(interval)
+        defer ticker.Stop()
+
+        for </span><span class="cov7" title="520">{
+                select </span>{
+                case &lt;-ctx.Done():<span class="cov1" title="2">
+                        return</span>
+                case &lt;-ticker.C:<span class="cov7" title="518">
+                        p.doPingRound()</span>
+                }
+        }
+}
+
+// monitorAndAdjust 定期触发缩容/扩容检查（将 MonitorInterval 配置落到实处）
+func (p *Pool[T]) monitorAndAdjust(ctx context.Context) <span class="cov1" title="2">{
+        interval := p.config.MonitorInterval
+        if interval &lt;= 0 </span><span class="cov0" title="0">{
+                return
+        }</span>
+        <span class="cov1" title="2">ticker := time.NewTicker(interval)
+        defer ticker.Stop()
+
+        for </span><span class="cov3" title="13">{
+                select </span>{
+                case &lt;-ctx.Done():<span class="cov1" title="2">
+                        return</span>
+                case &lt;-ticker.C:<span class="cov3" title="11">
+                        _ = p.manager.Send(func(a *PoolManagerActor[T], s *PoolManagerState[T]) </span><span class="cov3" title="11">{
+                                a.checkAndAdjust(s)
+                        }</span>)
+                }
+        }
+}
+
+func (p *Pool[T]) doPingRound() <span class="cov7" title="520">{
+        if p.waitQueue.Len() &gt; 0 </span><span class="cov1" title="1">{
+                return
+        }</span>
+
+        <span class="cov7" title="519">batch := p.collectPingBatch(5)
+        if len(batch) == 0 </span><span class="cov6" title="177">{
+                return
+        }</span>
+        <span class="cov7" title="342">p.processPingBatch(batch)</span>
+}
+
+// collectPingBatch 从 resources channel 取最多 maxCount 个连接
+// 中途有等待者进来则放回已取连接并返回 nil
+func (p *Pool[T]) collectPingBatch(maxCount int) []*resource[T] <span class="cov7" title="522">{
+        batch := make([]*resource[T], 0, maxCount)
+        for i := 0; i &lt; maxCount; i++ </span><span class="cov8" title="1550">{
+                if p.waitQueue.Len() &gt; 0 </span><span class="cov1" title="1">{
+                        // 有等待者进来了，放回已取连接
+                        for _, r := range batch </span><span class="cov0" title="0">{
+                                p.tryReturnOrClose(r)
+                        }</span>
+                        <span class="cov1" title="1">return nil</span>
+                }
+                <span class="cov8" title="1549">select </span>{
+                case r := &lt;-p.resources:<span class="cov8" title="1028">
+                        batch = append(batch, r)</span>
+                default:<span class="cov7" title="521">
+                        return batch</span> // channel 已空
+                }
+        }
+        <span class="cov0" title="0">return batch</span>
+}
+
+// processPingBatch 对一批连接执行 Ping，健康则放回，不健康则驱逐
+func (p *Pool[T]) processPingBatch(batch []*resource[T]) <span class="cov7" title="346">{
+        for _, r := range batch </span><span class="cov8" title="1030">{
+                if err := p.connControl.Ping(r.Conn); err != nil </span><span class="cov1" title="2">{
+                        // 不健康：异步通知 Actor 关闭并检查是否需要补充
+                        _ = p.manager.Send(func(a *PoolManagerActor[T], s *PoolManagerState[T]) </span><span class="cov1" title="2">{
+                                a.connControl.Close(r.Conn)
+                                a.poolTotalSize.Add(-1)
+                                a.checkAndAdjust(s)
+                        }</span>)
+                        <span class="cov1" title="2">if p.config.OnUnhealthy != nil </span><span class="cov1" title="1">{
+                                p.config.OnUnhealthy(err)
+                        }</span>
+                } else<span class="cov8" title="1028"> {
+                        // 健康：优先给等待者，否则放回
+                        if p.waitQueue.TryDequeue(r) </span><span class="cov1" title="1">{
+                                continue</span>
+                        }
+                        <span class="cov8" title="1027">p.tryReturnOrClose(r)</span>
+                }
+        }
+}
+
+// tryReturnOrClose 尝试将资源放回 channel，放回后二次检查是否有等待者
+// channel 满时关闭连接
+func (p *Pool[T]) tryReturnOrClose(r *resource[T]) <span class="cov8" title="1030">{
+        select </span>{
+        case p.resources &lt;- r:<span class="cov8" title="1029">
+                // 放回后二次检查：放回瞬间可能有新等待者
+                if p.waitQueue.Len() &gt; 0 </span><span class="cov1" title="1">{
+                        select </span>{
+                        case r2 := &lt;-p.resources:<span class="cov1" title="1">
+                                if !p.waitQueue.TryDequeue(r2) </span><span class="cov0" title="0">{
+                                        select </span>{
+                                        case p.resources &lt;- r2:<span class="cov0" title="0"></span>
+                                        default:<span class="cov0" title="0">
+                                                p.connControl.Close(r2.Conn)
+                                                p.totalSize.Add(-1)</span>
+                                        }
+                                }
+                        default:<span class="cov0" title="0"></span>
+                        }
+                }
+        default:<span class="cov1" title="1">
+                p.connControl.Close(r.Conn)
+                p.totalSize.Add(-1)</span>
+        }
+}
+
+func (p *Pool[T]) preInit(count int64, cc Conn[T]) <span class="cov5" title="50">{
+        var failed int64
+        for i := int64(0); i &lt; count; i++ </span><span class="cov6" title="134">{
+                conn, err := cc.Create()
+                if err != nil </span><span class="cov3" title="14">{
+                        failed++
+                        log.Printf("[TemplatePoolByGO] preInit: failed to create connection %d/%d: %v", i+1, count, err)
+                        continue</span>
+                }
+                <span class="cov6" title="120">p.totalSize.Add(1)
+                p.resources &lt;- &amp;resource[T]{
+                        ID:         fmt.Sprintf("init-%d", i),
+                        createTime: time.Now(),
+                        updateTime: time.Now(),
+                        Conn:       conn,
+                }</span>
+        }
+        <span class="cov5" title="47">created := count - failed
+        if failed &gt; 0 </span><span class="cov2" title="3">{
+                log.Printf("[TemplatePoolByGO] preInit: %d/%d connections created successfully, %d failed", created, count, failed)
+        }</span>
+        <span class="cov5" title="47">_ = p.manager.Send(func(a *PoolManagerActor[T], s *PoolManagerState[T]) </span><span class="cov4" title="42">{
+                a.initialized.Store(true)
+        }</span>)
+}
+
+func (p *Pool[T]) Get(ctx context.Context) (*resource[T], error) <span class="cov9" title="4992">{
+        select </span>{
+        case r := &lt;-p.resources:<span class="cov4" title="41">
+                return p.validateAndReturn(r)</span>
+        default:<span class="cov9" title="4951"></span>
+        }
+        // 前置拒绝，入队前判断
+        <span class="cov9" title="4924">if int64(p.waitQueue.Len()) &gt;= p.config.MaxWaitQueue </span><span class="cov4" title="27">{
+                return nil, ErrPoolBusy
+        }</span>
+        <span class="cov9" title="4884">waiter := p.waitQueue.Enqueue()
+
+        select </span>{
+        case r := &lt;-p.resources:<span class="cov1" title="1">
+                p.waitQueue.Remove(waiter)
+                // 排空 Enqueue→Remove 竞态窗口内 TryDequeue 投递到 waiter.Ch 的资源
+                // 如果不排空，该资源会永久丢失（goroutine 泄漏 + 连接泄漏）
+                select </span>{
+                case delivered := &lt;-waiter.Ch:<span class="cov1" title="1">
+                        // 尝试直接交给下一个等待者，放不回则放回 resources channel
+                        if !p.waitQueue.TryDequeue(delivered) </span><span class="cov1" title="1">{
+                                select </span>{
+                                case p.resources &lt;- delivered:<span class="cov1" title="1"></span>
+                                default:<span class="cov0" title="0">
+                                        p.connControl.Close(delivered.Conn)
+                                        p.totalSize.Add(-1)</span>
+                                }
+                        }
+                default:<span class="cov0" title="0"></span>
+                }
+                <span class="cov1" title="1">return p.validateAndReturn(r)</span>
+        default:<span class="cov9" title="4977"></span>
+        }
+
+        // 限流的扩容通知
+        <span class="cov9" title="4977">now := time.Now().UnixMilli()
+        lastNotify := p.lastExpandNotify.Load()
+        if now-lastNotify &gt; 10 </span><span class="cov3" title="12">{
+                if p.lastExpandNotify.CompareAndSwap(lastNotify, now) </span><span class="cov3" title="12">{
+                        _ = p.manager.Send(func(a *PoolManagerActor[T], s *PoolManagerState[T]) </span><span class="cov3" title="12">{
+                                a.checkAndAdjust(s)
+                        }</span>)
+                }
+        }
+
+        <span class="cov9" title="4985">select </span>{
+        case &lt;-ctx.Done():<span class="cov2" title="3">
+                p.waitQueue.Remove(waiter)
+                return nil, ctx.Err()</span> // 删掉原来的 ErrPoolBusy 判断
+        case r, ok := &lt;-waiter.Ch:<span class="cov9" title="4923">
+                if !ok </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("pool closed")
+                }</span>
+                <span class="cov9" title="4926">return p.validateAndReturn(r)</span>
+        }
+}
+
+func (p *Pool[T]) Put(res *resource[T]) error <span class="cov9" title="4996">{
+        if res == nil </span><span class="cov1" title="1">{
+                return nil
+        }</span>
+        <span class="cov9" title="4996">if err := p.connControl.Reset(res.Conn); err != nil </span><span class="cov1" title="1">{
+                _ = p.manager.Send(func(a *PoolManagerActor[T], s *PoolManagerState[T]) </span><span class="cov1" title="1">{
+                        a.connControl.Close(res.Conn)
+                        a.poolTotalSize.Add(-1)
+                }</span>)
+                <span class="cov1" title="1">p.inUse.Add(-1)
+                return err</span>
+        }
+
+        <span class="cov10" title="4999">if p.waitQueue.TryDequeue(res) </span><span class="cov9" title="4950">{
+                p.inUse.Add(-1)
+                return nil
+        }</span>
+
+        <span class="cov4" title="41">select </span>{
+        case p.resources &lt;- res:<span class="cov4" title="36">
+                p.inUse.Add(-1)
+                return nil</span>
+        default:<span class="cov2" title="5"></span>
+        }
+
+        <span class="cov2" title="5">p.inUse.Add(-1)
+        _ = p.manager.Send(func(a *PoolManagerActor[T], s *PoolManagerState[T]) </span><span class="cov2" title="5">{
+                a.connControl.Close(res.Conn)
+                a.poolTotalSize.Add(-1)
+        }</span>)
+        <span class="cov2" title="5">return nil</span>
+}
+
+func (p *Pool[T]) validateAndReturn(r *resource[T]) (*resource[T], error) <span class="cov9" title="4965">{
+        // 如果配置了 Get 时验证连接存活，则 Ping 检测
+        if p.config.ReconnectOnGet </span><span class="cov2" title="6">{
+                if err := p.connControl.Ping(r.Conn); err != nil </span><span class="cov1" title="2">{
+                        // Ping 失败，尝试重连
+                        for retry := 0; retry &lt; p.config.MaxRetries; retry++ </span><span class="cov2" title="3">{
+                                newConn, createErr := p.connControl.Create()
+                                if createErr == nil </span><span class="cov1" title="1">{
+                                        p.connControl.Close(r.Conn)
+                                        r.Conn = newConn
+                                        r.createTime = time.Now()
+                                        r.retryCount++
+                                        break</span>
+                                }
+                                <span class="cov1" title="2">if retry &lt; p.config.MaxRetries-1 </span><span class="cov1" title="1">{
+                                        time.Sleep(p.config.RetryInterval)
+                                }</span>
+                        }
+                }
+        }
+        <span class="cov9" title="4967">p.inUse.Add(1)
+        r.updateTime = time.Now()
+        return r, nil</span>
+}
+
+func (p *Pool[T]) Close() <span class="cov5" title="50">{
+        p.cancel()
+        p.waitQueue.Clear()
+        p.manager.StopAndWait()
+        for </span><span class="cov6" title="221">{
+                select </span>{
+                case r := &lt;-p.resources:<span class="cov6" title="171">
+                        p.connControl.Close(r.Conn)</span>
+                default:<span class="cov5" title="50">
+                        return</span>
+                }
+        }
+}
+
+func (p *Pool[T]) Stats(ctx context.Context) (map[string]int64, error) <span class="cov3" title="14">{
+        return map[string]int64{
+                "total_size":     p.totalSize.Load(),
+                "pool_available": int64(len(p.resources)),
+                "pool_in_use":    p.inUse.Load(),
+                "waiting_count":  int64(p.waitQueue.Len()),
+                "expanding":      p.expanding.Load(),
+                "buffer_cap":     int64(cap(p.resources)), // 新增：显示 buffer 容量
+        }, nil
+}</span>
+</pre>
+		
+		<pre class="file" id="file2" style="display: none">package pool
+
+import (
+        "fmt"
+        "sync/atomic"
+        "time"
+
+        closure "github.com/RedHuang-0622/TemplatePoolByGO/util/Closure"
+        "github.com/RedHuang-0622/TemplatePoolByGO/util/request_queue"
+)
+
+type PoolManagerState[T any] struct {
+        config      PoolConfig
+        connControl Conn[T]
+}
+
+type PoolManagerActor[T any] struct {
+        closure.BaseActor[PoolManagerState[T]]
+        config          PoolConfig
+        connControl     Conn[T]
+        manager         *closure.Closure[PoolManagerState[T], *PoolManagerActor[T]]
+        sharedResources chan *resource[T]
+        waitQueue       *request_queue.LockFreeQueue[*resource[T]]
+        poolTotalSize   *atomic.Int64
+        expanding       *atomic.Int64 // 新增：记录扩容中的连接数
+        initialized     atomic.Bool
+}
+
+func NewPoolManagerActor[T any](
+        config PoolConfig,
+        connControl Conn[T],
+        totalSize *atomic.Int64,
+        wq *request_queue.LockFreeQueue[*resource[T]],
+        expanding *atomic.Int64,
+) *PoolManagerActor[T] <span class="cov9" title="50">{
+        return &amp;PoolManagerActor[T]{
+                config:        config,
+                connControl:   connControl,
+                poolTotalSize: totalSize,
+                waitQueue:     wq,
+                expanding:     expanding,
+        }
+}</span>
+
+func (a *PoolManagerActor[T]) Init() PoolManagerState[T] <span class="cov9" title="50">{
+        return PoolManagerState[T]{
+                config:      a.config,
+                connControl: a.connControl,
+        }
+}</span>
+
+// checkAndAdjust 检测并调整池大小（更敏感的扩容触发条件）
+// ===== 核心修复：扩容逻辑不应该依赖 buffer 的 idleRatio =====
+func (a *PoolManagerActor[T]) checkAndAdjust(s *PoolManagerState[T]) <span class="cov7" title="26">{
+        if !a.initialized.Load() </span><span class="cov1" title="1">{
+                return
+        }</span>
+
+        <span class="cov7" title="25">poolLen := int64(len(a.sharedResources))
+        capacity := int64(cap(a.sharedResources))
+        waiting := int64(a.waitQueue.Len())
+        currentTotal := a.poolTotalSize.Load()
+        expandingCount := a.expanding.Load()
+        effectiveTotal := currentTotal + expandingCount
+
+        // ===== 正确的扩容逻辑 =====
+        // 不要用 idleRatio，而是直接看：
+        // 1. 是否有人在等（有需求）
+        // 2. 总连接数是否达到上限（有空间）
+
+        shouldExpand := false
+
+        // 条件 1：有人在排队（最高优先级）
+        if waiting &gt; 0 &amp;&amp; effectiveTotal &lt; s.config.MaxSize </span><span class="cov4" title="5">{
+                shouldExpand = true
+        }</span>
+
+        // 条件 2：空闲连接不足（基于 buffer 利用率）
+        // 但这里的判断应该是：如果 buffer 快满了，说明空闲连接很多，不需要扩容
+        // 如果 buffer 很空，说明连接都在用，可能需要扩容
+        <span class="cov7" title="25">if !shouldExpand &amp;&amp; effectiveTotal &lt; s.config.MaxSize </span><span class="cov6" title="13">{
+                // 关键修改：只有当 buffer 利用率低（空闲少）且还没到 MaxSize 时才扩容
+                bufferUtilization := float64(poolLen) / float64(capacity)
+                if bufferUtilization &lt; 0.3 </span><span class="cov3" title="3">{ // buffer 利用率低于 30%，说明大部分连接都在用
+                        shouldExpand = true
+                }</span>
+        }
+
+        <span class="cov7" title="25">if shouldExpand </span><span class="cov5" title="8">{
+                expandSize := a.calculateExpandSize(s, waiting, effectiveTotal)
+                if expandSize &gt; 0 </span><span class="cov5" title="8">{
+                        a.expand(s, expandSize)
+                }</span>
+                <span class="cov5" title="8">return</span>
+        }
+
+        // ===== 缩容逻辑 =====
+        // 只有当空闲连接很多（buffer 快满）且没人等待时才缩容
+        <span class="cov6" title="17">bufferUtilization := float64(poolLen) / float64(capacity)
+        if bufferUtilization &gt; 0.9 &amp;&amp; waiting == 0 &amp;&amp; expandingCount == 0 &amp;&amp; currentTotal &gt; s.config.MinSize </span><span class="cov0" title="0">{
+                a.shrink(s)
+        }</span>
+}
+
+// calculateExpandSize 计算扩容大小（优化的非线性曲线 + 压力补偿）
+func (a *PoolManagerActor[T]) calculateExpandSize(s *PoolManagerState[T], waiting int64, effectiveTotal int64) int64 <span class="cov6" title="16">{
+        maxSize := s.config.MaxSize
+        minSize := s.config.MinSize
+
+        if effectiveTotal &gt;= maxSize </span><span class="cov1" title="1">{
+                return 0
+        }</span>
+
+        // ============ 非线性曲线逻辑 ============
+        <span class="cov6" title="15">usedRange := effectiveTotal - minSize
+        totalRange := maxSize - minSize
+        if totalRange &lt;= 0 </span><span class="cov0" title="0">{
+                totalRange = 1
+        }</span>
+        <span class="cov6" title="15">usageRate := float64(usedRange) / float64(totalRange)
+
+        var baseStep int64
+        switch </span>{
+        case usageRate &lt; 0.20:<span class="cov5" title="10"> // 起步期：保守扩容
+                baseStep = 15</span>
+        case usageRate &lt; 0.75:<span class="cov3" title="3"> // 爆发期：激进扩容
+                remaining := maxSize - effectiveTotal
+                baseStep = remaining / 2</span> // 原来是 /3，现在更激进
+        default:<span class="cov2" title="2"> // 收敛期：谨慎扩容
+                remaining := maxSize - effectiveTotal
+                baseStep = remaining / 8</span> // 原来是 /10
+        }
+
+        // ============ 压力补偿逻辑 ============
+        // 如果排队人数很多，baseStep 可能跟不上
+        // 取等待人数的 1/3 作为压力补偿
+        <span class="cov6" title="15">pressureStep := waiting / 3
+        if waiting &gt; 100 </span><span class="cov2" title="2">{ // 如果等待人数超过100，进一步加速
+                pressureStep = waiting / 2
+        }</span>
+
+        // 最终步长 = max(曲线步长, 压力补偿)
+        <span class="cov6" title="15">step := baseStep
+        if pressureStep &gt; step </span><span class="cov3" title="4">{
+                step = pressureStep
+        }</span>
+
+        // ============ 限制和保护 ============
+        // 单次扩容不宜超过 MaxSize 的 25%（原来是 20%，现在允许更大步长）
+        <span class="cov6" title="15">limit := maxSize / 3
+        if step &gt; limit </span><span class="cov4" title="6">{
+                step = limit
+        }</span>
+
+        // 保护：不超过剩余空间
+        <span class="cov6" title="15">if effectiveTotal+step &gt; maxSize </span><span class="cov0" title="0">{
+                step = maxSize - effectiveTotal
+        }</span>
+
+        // 至少扩容 1 个
+        <span class="cov6" title="15">if step &lt; 1 &amp;&amp; effectiveTotal &lt; maxSize </span><span class="cov1" title="1">{
+                step = 1
+        }</span>
+
+        <span class="cov6" title="15">return step</span>
+}
+
+func (a *PoolManagerActor[T]) expand(s *PoolManagerState[T], expandSize int64) <span class="cov5" title="9">{
+        if a.poolTotalSize.Load()+a.expanding.Load() &gt;= s.config.MaxSize </span><span class="cov0" title="0">{
+                return
+        }</span>
+
+        <span class="cov5" title="9">for i := int64(0); i &lt; expandSize; i++ </span><span class="cov9" title="69">{
+                newExpanding := a.expanding.Add(1)
+                newTotal := a.poolTotalSize.Load() + newExpanding
+
+                if newTotal &gt; s.config.MaxSize </span><span class="cov0" title="0">{
+                        a.expanding.Add(-1)
+                        break</span>
+                }
+
+                <span class="cov9" title="69">go func(idx int64) </span><span class="cov9" title="69">{
+
+                        var conn T
+                        var err error
+                        maxRetries := s.config.MaxRetries
+                        if maxRetries &lt; 1 </span><span class="cov0" title="0">{
+                                maxRetries = 1
+                        }</span>
+                        <span class="cov9" title="69">for retry := 0; retry &lt; maxRetries; retry++ </span><span class="cov10" title="78">{
+                                conn, err = a.connControl.Create()
+                                if err == nil </span><span class="cov9" title="63">{
+                                        break</span>
+                                }
+                                <span class="cov6" title="15">if retry &lt; maxRetries-1 </span><span class="cov5" title="9">{
+                                        time.Sleep(s.config.RetryInterval)
+                                }</span>
+                        }
+                        <span class="cov9" title="69">if err != nil </span><span class="cov4" title="6">{
+                                a.expanding.Add(-1)
+                                return
+                        }</span>
+
+                        <span class="cov9" title="63">_ = a.manager.Send(func(a *PoolManagerActor[T], s *PoolManagerState[T]) </span><span class="cov9" title="50">{
+                                a.expanding.Add(-1)
+                                a.poolTotalSize.Add(1)
+                                res := &amp;resource[T]{
+                                        ID:         fmt.Sprintf("exp-%d-%d", time.Now().UnixNano(), idx),
+                                        createTime: time.Now(),
+                                        updateTime: time.Now(),
+                                        Conn:       conn,
+                                }
+                                if a.waitQueue.TryDequeue(res) </span><span class="cov3" title="4">{
+                                        return
+                                }</span>
+                                <span class="cov8" title="46">select </span>{
+                                case a.sharedResources &lt;- res:<span class="cov8" title="46"></span>
+                                default:<span class="cov0" title="0">
+                                        a.connControl.Close(conn)
+                                        a.poolTotalSize.Add(-1)</span>
+                                }
+                        })
+                }(i)
+        }
+}
+
+// shrink 缩容逻辑（优先驱逐超龄连接）
+func (a *PoolManagerActor[T]) shrink(s *PoolManagerState[T]) <span class="cov2" title="2">{
+        currentTotal := a.poolTotalSize.Load()
+        target := currentTotal - s.config.MinSize
+        if target &lt;= 0 </span><span class="cov0" title="0">{
+                return
+        }</span>
+
+        // 渐进式缩容：每次最多缩 20%
+        <span class="cov2" title="2">shrinkSize := target / 5
+        if shrinkSize &lt; 1 </span><span class="cov0" title="0">{
+                shrinkSize = 1
+        }</span>
+        <span class="cov2" title="2">if shrinkSize &gt; target </span><span class="cov0" title="0">{
+                shrinkSize = target
+        }</span>
+
+        // 两阶段缩容：先收集连接，优先关闭超龄的
+        // 第一阶段：收集一批连接
+        <span class="cov2" title="2">type candidate struct {
+                r       *resource[T]
+                expired bool
+        }
+        candidates := make([]candidate, 0, shrinkSize)
+        collected := int64(0)
+        for collected &lt; shrinkSize </span><span class="cov3" title="3">{
+                select </span>{
+                case r := &lt;-a.sharedResources:<span class="cov3" title="3">
+                        expired := s.config.SurviveTime &gt; 0 &amp;&amp; time.Since(r.createTime) &gt; s.config.SurviveTime
+                        candidates = append(candidates, candidate{r: r, expired: expired})
+                        collected++</span>
+                default:<span class="cov0" title="0">
+                        goto process</span>
+                }
+        }
+
+process:
+        <span class="cov2" title="2">if len(candidates) == 0 </span><span class="cov0" title="0">{
+                return
+        }</span>
+
+        // 第二阶段：优先关闭超龄连接，不足再关正常连接，剩余的放回
+        <span class="cov2" title="2">survivors := make([]*resource[T], 0)
+        closedCount := int64(0)
+        for _, c := range candidates </span><span class="cov3" title="3">{
+                if c.expired </span><span class="cov1" title="1">{
+                        a.connControl.Close(c.r.Conn)
+                        a.poolTotalSize.Add(-1)
+                        closedCount++
+                }</span> else<span class="cov2" title="2"> {
+                        survivors = append(survivors, c.r)
+                }</span>
+        }
+
+        // 如果超龄连接不够缩容目标，从正常连接中继续关闭
+        <span class="cov2" title="2">for _, r := range survivors </span><span class="cov2" title="2">{
+                if closedCount &gt;= shrinkSize </span><span class="cov0" title="0">{
+                        // 已达目标，剩余放回
+                        select </span>{
+                        case a.sharedResources &lt;- r:<span class="cov0" title="0"></span>
+                        default:<span class="cov0" title="0">
+                                a.connControl.Close(r.Conn)
+                                a.poolTotalSize.Add(-1)</span>
+                        }
+                } else<span class="cov2" title="2"> {
+                        a.connControl.Close(r.Conn)
+                        a.poolTotalSize.Add(-1)
+                        closedCount++
+                }</span>
+        }
+}
+</pre>
+		
+		<pre class="file" id="file3" style="display: none">package pool_test
+
+import (
+        "context"
+        "fmt"
+        "sync/atomic"
+        "time"
+
+        pool "github.com/RedHuang-0622/TemplatePoolByGO"
+)
+
+var poolConfig = pool.PoolConfig{
+        MinSize:          5,
+        MaxSize:          100,
+        SurviveTime:      30 * time.Minute,
+        MonitorInterval:  10 * time.Second,
+        IdleBufferFactor: 0.4,
+        MaxRetries:       3,
+        RetryInterval:    1 * time.Second,
+        ReconnectOnGet:   true,
+        PingInterval:     30 * time.Second,
+        OnUnhealthy: func(err error) <span class="cov0" title="0">{
+                fmt.Printf("[Unhealthy] %v\n", err)
+        }</span>,
+        MaxWaitQueue: 10000,
+}
+
+// ================= ExampleConn 定义 ================= //
+
+type ExampleConn struct {
+        Num atomic.Int64
+}
+
+func (e *ExampleConn) reset() error <span class="cov0" title="0">{
+        e.Num.Store(0)
+        return nil
+}</span>
+
+func (e *ExampleConn) ping() error <span class="cov0" title="0">{
+        e.Num.Add(1)
+        return nil
+}</span>
+
+// ================= ExampleConnControl 定义（实现 Conn[T] 接口）================= //
+
+type ExampleConnControl struct{}
+
+func (ecc *ExampleConnControl) Create() (*ExampleConn, error) <span class="cov0" title="0">{
+        return &amp;ExampleConn{}, nil
+}</span>
+
+func (ecc *ExampleConnControl) Close(_ *ExampleConn) error <span class="cov0" title="0">{
+        return nil
+}</span>
+
+func (ecc *ExampleConnControl) Reset(c *ExampleConn) error <span class="cov0" title="0">{
+        return c.reset()
+}</span>
+
+func (ecc *ExampleConnControl) Ping(c *ExampleConn) error <span class="cov0" title="0">{
+        return c.ping()
+}</span>
+
+// ================= 使用示例 ================= //
+
+func ExampleGet() <span class="cov0" title="0">{
+        p := pool.NewPool(poolConfig, &amp;ExampleConnControl{})
+        defer p.Close()
+
+        conn, err := p.Get(context.Background())
+        if err != nil </span><span class="cov0" title="0">{
+                fmt.Printf("获取连接失败: %v\n", err)
+                return
+        }</span>
+        <span class="cov0" title="0">fmt.Printf("获取连接成功, Num=%d\n", conn.Conn.Num.Load())</span>
+}
+
+func ExamplePut() <span class="cov0" title="0">{
+        p := pool.NewPool(poolConfig, &amp;ExampleConnControl{})
+        defer p.Close()
+
+        conn, err := p.Get(context.Background())
+        if err != nil </span><span class="cov0" title="0">{
+                fmt.Printf("获取连接失败: %v\n", err)
+                return
+        }</span>
+        <span class="cov0" title="0">fmt.Printf("获取连接成功, Num=%d\n", conn.Conn.Num.Load())
+
+        if err := p.Put(conn); err != nil </span><span class="cov0" title="0">{
+                fmt.Printf("归还连接失败: %v\n", err)
+                return
+        }</span>
+        <span class="cov0" title="0">fmt.Println("归还连接成功")</span>
+}
+
+func ExampleStats() <span class="cov0" title="0">{
+        p := pool.NewPool(poolConfig, &amp;ExampleConnControl{})
+        defer p.Close()
+
+        conn, err := p.Get(context.Background())
+        if err != nil </span><span class="cov0" title="0">{
+                fmt.Printf("获取连接失败: %v\n", err)
+                return
+        }</span>
+        <span class="cov0" title="0">defer p.Put(conn)
+
+        stats, err := p.Stats(context.Background())
+        if err != nil </span><span class="cov0" title="0">{
+                fmt.Printf("获取统计信息失败: %v\n", err)
+                return
+        }</span>
+        <span class="cov0" title="0">fmt.Printf("total=%d available=%d in_use=%d waiting=%d\n",
+                stats["total_size"], stats["pool_available"],
+                stats["pool_in_use"], stats["waiting_count"])</span>
+}</pre>
+		
+		<pre class="file" id="file4" style="display: none">package closure
+
+import (
+        "context"
+        "fmt"
+        "sync"
+        "time"
+)
+
+// Actor 定义了 Actor 的基本行为接口
+type Actor[T any] interface {
+        // Init 初始化状态
+        Init() T
+        // OnStart 在 Actor 启动时调用（可选实现）
+        OnStart(state *T)
+        // OnStop 在 Actor 停止时调用（可选实现）
+        OnStop(state *T)
+}
+
+// BaseActor 提供默认实现
+type BaseActor[T any] struct{}
+
+func (b BaseActor[T]) Init() T <span class="cov1" title="1">{
+        var zero T
+        return zero
+}</span>
+
+func (b BaseActor[T]) OnStart(state *T) {<span class="cov5" title="86">}</span>
+func (b BaseActor[T]) OnStop(state *T)  {<span class="cov5" title="86">}</span>
+
+// Closure 是一个类型安全的 Actor 实现
+type Closure[T any, A Actor[T]] struct {
+        inbox   chan func()
+        stop    chan struct{}
+        stopped chan struct{}
+        once    sync.Once
+
+        state T
+        actor A
+
+        // 配置选项
+        inboxSize int
+        timeout   time.Duration
+}
+
+// Option 配置选项
+type Option func(*config)
+
+type config struct {
+        inboxSize int
+        timeout   time.Duration
+}
+
+// WithInboxSize 设置消息队列大小
+func WithInboxSize(size int) Option <span class="cov4" title="59">{
+        return func(c *config) </span><span class="cov4" title="59">{
+                c.inboxSize = size
+        }</span>
+}
+func (c *Closure[T, A]) GetActor() A <span class="cov3" title="13">{
+        return c.actor
+}</span>
+
+// WithTimeout 设置调用超时时间
+func WithTimeout(timeout time.Duration) Option <span class="cov1" title="2">{
+        return func(c *config) </span><span class="cov1" title="2">{
+                c.timeout = timeout
+        }</span>
+}
+
+// New 创建一个新的 Closure Actor
+func New[T any, A Actor[T]](actor A, opts ...Option) *Closure[T, A] <span class="cov5" title="85">{
+        cfg := &amp;config{
+                inboxSize: 10000,
+                timeout:   0, // 默认不超时
+        }
+        for _, opt := range opts </span><span class="cov5" title="61">{
+                opt(cfg)
+        }</span>
+
+        <span class="cov5" title="85">c := &amp;Closure[T, A]{
+                inbox:     make(chan func(), cfg.inboxSize),
+                stop:      make(chan struct{}),
+                stopped:   make(chan struct{}),
+                actor:     actor,
+                state:     actor.Init(),
+                inboxSize: cfg.inboxSize,
+                timeout:   cfg.timeout,
+        }
+
+        // 启动事件循环
+        go c.eventLoop()
+
+        return c</span>
+}
+
+// eventLoop 事件循环
+func (c *Closure[T, A]) eventLoop() <span class="cov5" title="85">{
+        defer close(c.stopped)
+
+        // 调用启动钩子
+        c.actor.OnStart(&amp;c.state)
+
+        for </span><span class="cov10" title="10152">{
+                select </span>{
+                case fn := &lt;-c.inbox:<span class="cov9" title="10067">
+                        fn()</span>
+                case &lt;-c.stop:<span class="cov5" title="85">
+                        // 调用停止钩子
+                        c.actor.OnStop(&amp;c.state)
+                        return</span>
+                }
+        }
+}
+
+// Call 同步调用，阻塞等待结果返回
+// 适用场景：需要立即获取操作结果的场景，例如查询操作或需要确认执行结果
+// 注意：调用会阻塞当前 goroutine 直到操作完成
+func (c *Closure[T, A]) Call(fn func(A, *T) any) (any, error) <span class="cov9" title="8953">{
+        return c.CallWithContext(context.Background(), fn)
+}</span>
+
+// CallWithContext 带上下文的同步调用
+// 上下文作用：
+// 1. 超时控制：可以设置操作的最大执行时间，避免无限等待
+// 2. 取消传播：当上层操作取消时，可以级联取消正在等待的调用
+// 3. 请求追踪：可以在分布式系统中传递 trace id 等信息
+// 使用场景：需要超时控制或取消机制的同步调用
+// CallWithContext 带上下文的同步调用
+func (c *Closure[T, A]) CallWithContext(ctx context.Context, fn func(A, *T) any) (any, error) <span class="cov9" title="8876">{
+        // 优先检查是否已经停止，避免向已关闭的循环发送消息导致永久阻塞
+        select </span>{
+        case &lt;-c.stopped:<span class="cov2" title="4">
+                return nil, fmt.Errorf("actor is stopped")</span>
+        default:<span class="cov9" title="8875"></span>
+        }
+
+        <span class="cov9" title="8879">reply := make(chan any, 1)
+        errCh := make(chan error, 1)
+
+        task := func() </span><span class="cov9" title="9087">{
+                defer func() </span><span class="cov9" title="9087">{
+                        if r := recover(); r != nil </span><span class="cov1" title="1">{
+                                errCh &lt;- fmt.Errorf("panic in call: %v", r)
+                        }</span>
+                }()
+                <span class="cov9" title="9087">reply &lt;- fn(c.actor, &amp;c.state)</span>
+        }
+
+        // 尝试发送任务
+        <span class="cov9" title="8813">select </span>{
+        case c.inbox &lt;- task:<span class="cov9" title="9027"></span>
+                // 发送成功，继续等待结果
+        case &lt;-c.stopped:<span class="cov0" title="0">
+                return nil, fmt.Errorf("actor is stopped")</span>
+        case &lt;-ctx.Done():<span class="cov1" title="1">
+                return nil, ctx.Err()</span>
+        }
+
+        // 等待结果或超时/取消
+        <span class="cov9" title="9028">select </span>{
+        case result := &lt;-reply:<span class="cov9" title="8927">
+                return result, nil</span>
+        case err := &lt;-errCh:<span class="cov1" title="1">
+                return nil, err</span>
+        case &lt;-ctx.Done():<span class="cov1" title="1">
+                return nil, ctx.Err()</span>
+        }
+}
+
+// CallTyped 类型安全的调用
+// CallTyped 类型安全的调用（替换整个函数）
+func CallTyped[T any, A Actor[T], R any](c *Closure[T, A], fn func(A, *T) R) (R, error) <span class="cov9" title="8995">{
+        result, callErr := c.Call(func(a A, t *T) any </span><span class="cov9" title="9083">{
+                return fn(a, t)
+        }</span>)
+        <span class="cov9" title="8869">if callErr != nil </span><span class="cov1" title="1">{
+                var zero R
+                return zero, callErr
+        }</span>
+
+        <span class="cov9" title="8876">var zero R
+
+        // 处理 result == nil 的情况
+        if result == nil </span><span class="cov9" title="3916">{
+                // 如果 R 是 error 接口类型，则 nil 表示成功的 nil error
+                if any(zero) == nil </span><span class="cov9" title="3921">{ // 利用 nil 接口相等性判断 R 是否 error
+                        // 返回零值（对于 error 是 nil） + 无错误
+                        return *new(R), nil
+                }</span>
+                // 其他类型返回 nil 是异常
+                <span class="cov0" title="0">return zero, fmt.Errorf("unexpected nil result for type %T", zero)</span>
+        }
+
+        // 正常断言
+        <span class="cov9" title="4966">val, ok := result.(R)
+        if !ok </span><span class="cov0" title="0">{
+                return zero, fmt.Errorf("type assertion failed: expected %T, got %T", zero, result)
+        }</span>
+
+        <span class="cov9" title="4984">return val, nil</span>
+}
+
+// Send 异步发送消息，不等待结果返回
+// 适用场景：
+// 1. 只需要触发操作而不关心结果，例如日志记录、事件通知
+// 2. 性能敏感的场景，避免阻塞调用方
+// 3. 批量操作，需要快速提交多个任务
+// 注意：如果队列满会阻塞，使用 TrySend 可以避免阻塞
+func (c *Closure[T, A]) Send(fn func(A, *T)) error <span class="cov7" title="498">{
+        task := func() </span><span class="cov7" title="479">{
+                defer func() </span><span class="cov7" title="479">{
+                        if r := recover(); r != nil </span><span class="cov1" title="1">{
+                                // 可以添加日志记录
+                                fmt.Printf("panic in send: %v\n", r)
+                        }</span>
+                }()
+                <span class="cov7" title="479">fn(c.actor, &amp;c.state)</span>
+        }
+
+        <span class="cov7" title="498">select </span>{
+        case c.inbox &lt;- task:<span class="cov7" title="491">
+                return nil</span>
+        case &lt;-c.stopped:<span class="cov2" title="7">
+                return fmt.Errorf("actor is stopped")</span>
+        }
+}
+
+// TrySend 尝试异步发送，如果队列满则立即返回错误
+// 适用场景：高并发环境下，需要快速失败而不是阻塞等待
+func (c *Closure[T, A]) TrySend(fn func(A, *T)) error <span class="cov7" title="505">{
+        task := func() </span><span class="cov7" title="501">{
+                defer func() </span><span class="cov7" title="501">{
+                        if r := recover(); r != nil </span><span class="cov1" title="1">{
+                                fmt.Printf("panic in try send: %v\n", r)
+                        }</span>
+                }()
+                <span class="cov7" title="501">fn(c.actor, &amp;c.state)</span>
+        }
+
+        <span class="cov7" title="505">select </span>{
+        case c.inbox &lt;- task:<span class="cov7" title="503">
+                return nil</span>
+        case &lt;-c.stopped:<span class="cov1" title="1">
+                return fmt.Errorf("actor is stopped")</span>
+        default:<span class="cov1" title="1">
+                return fmt.Errorf("inbox is full")</span>
+        }
+}
+
+// Stop 停止 Actor
+func (c *Closure[T, A]) Stop() <span class="cov5" title="87">{
+        c.once.Do(func() </span><span class="cov5" title="85">{
+                close(c.stop)
+        }</span>)
+}
+
+// StopAndWait 停止 Actor 并等待完全停止
+func (c *Closure[T, A]) StopAndWait() <span class="cov5" title="83">{
+        c.Stop()
+        &lt;-c.stopped
+}</span>
+
+// IsStopped 检查是否已停止
+func (c *Closure[T, A]) IsStopped() bool <span class="cov2" title="3">{
+        select </span>{
+        case &lt;-c.stopped:<span class="cov1" title="2">
+                return true</span>
+        default:<span class="cov1" title="1">
+                return false</span>
+        }
+}
+
+// GetState 获取状态的只读副本（需要状态实现深拷贝）
+func (c *Closure[T, A]) GetState(copier func(T) T) (T, error) <span class="cov1" title="2">{
+        result, err := c.Call(func(a A, t *T) any </span><span class="cov1" title="1">{
+                return copier(*t)
+        }</span>)
+        <span class="cov1" title="2">if err != nil </span><span class="cov1" title="1">{
+                var zero T
+                return zero, err
+        }</span>
+        <span class="cov1" title="1">return result.(T), nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file5" style="display: none">package request_queue
+
+import (
+        "runtime"
+        "sync"
+        "sync/atomic"
+        "unsafe"
+)
+
+type LockFreeWaiter[T any] struct {
+        Ch        chan T
+        next      unsafe.Pointer
+        Cancelled atomic.Bool
+        delivered atomic.Bool // 新增：资源已投递，Ch 可能还没被读
+}
+
+type LockFreeQueue[T any] struct {
+        head     unsafe.Pointer
+        tail     unsafe.Pointer
+        length   atomic.Int64
+        chanPool sync.Pool
+}
+
+func NewLockFreeQueue[T any]() *LockFreeQueue[T] <span class="cov5" title="63">{
+        q := &amp;LockFreeQueue[T]{}
+        q.chanPool.New = func() interface{} </span><span class="cov9" title="8087">{
+                return make(chan T, 1) // 必须带缓冲，防止 TryDequeue 阻塞
+        }</span>
+        <span class="cov5" title="63">sentinel := &amp;LockFreeWaiter[T]{Ch: nil}
+        q.head = unsafe.Pointer(sentinel)
+        q.tail = unsafe.Pointer(sentinel)
+        return q</span>
+}
+
+// Enqueue 入队（非阻塞）
+func (q *LockFreeQueue[T]) Enqueue() *LockFreeWaiter[T] <span class="cov9" title="8138">{
+        w := &amp;LockFreeWaiter[T]{
+                Ch: q.chanPool.Get().(chan T),
+        }
+        w.Cancelled.Store(false)
+
+        for </span><span class="cov10" title="8599">{
+                tail := (*LockFreeWaiter[T])(atomic.LoadPointer(&amp;q.tail))
+                next := (*LockFreeWaiter[T])(atomic.LoadPointer(&amp;tail.next))
+
+                // 一致性检查
+                if tail == (*LockFreeWaiter[T])(atomic.LoadPointer(&amp;q.tail)) </span><span class="cov9" title="8571">{
+                        if next == nil </span><span class="cov9" title="8397">{
+                                // 尝试链接新节点
+                                if atomic.CompareAndSwapPointer(&amp;tail.next, nil, unsafe.Pointer(w)) </span><span class="cov9" title="8272">{
+                                        // 成功链接，尝试更新 tail（允许失败）
+                                        atomic.CompareAndSwapPointer(&amp;q.tail, unsafe.Pointer(tail), unsafe.Pointer(w))
+                                        q.length.Add(1)
+                                        return w
+                                }</span>
+                        } else<span class="cov6" title="183"> {
+                                // tail 落后，帮助推进
+                                atomic.CompareAndSwapPointer(&amp;q.tail, unsafe.Pointer(tail), unsafe.Pointer(next))
+                        }</span>
+                }
+                // 失败时快速重试，不需要退避
+        }
+}
+
+// TryDequeue 尝试将资源分发给队列中的第一个有效等待者（优化版）
+func (q *LockFreeQueue[T]) TryDequeue(resource T) bool <span class="cov9" title="8322">{
+        maxAttempts := 100 // 最多尝试100次，避免无限循环
+        attempts := 0
+
+        for attempts &lt; maxAttempts </span><span class="cov9" title="8554">{
+                attempts++
+
+                head := (*LockFreeWaiter[T])(atomic.LoadPointer(&amp;q.head))
+                tail := (*LockFreeWaiter[T])(atomic.LoadPointer(&amp;q.tail))
+                next := (*LockFreeWaiter[T])(atomic.LoadPointer(&amp;head.next))
+
+                // 一致性检查
+                if head != (*LockFreeWaiter[T])(atomic.LoadPointer(&amp;q.head)) </span><span class="cov3" title="17">{
+                        continue</span>
+                }
+
+                // 队列为空
+                <span class="cov9" title="8545">if next == nil </span><span class="cov8" title="1191">{
+                        return false
+                }</span>
+
+                // tail 落后，帮助推进
+                <span class="cov9" title="7354">if head == tail </span><span class="cov1" title="2">{
+                        atomic.CompareAndSwapPointer(&amp;q.tail, unsafe.Pointer(tail), unsafe.Pointer(next))
+                        continue</span>
+                }
+
+                // ============ 处理已取消的节点（延迟删除）============
+                <span class="cov9" title="7355">if next.Cancelled.Load() </span><span class="cov5" title="80">{
+                        if atomic.CompareAndSwapPointer(&amp;q.head, unsafe.Pointer(head), unsafe.Pointer(next)) </span><span class="cov5" title="80">{
+                                q.length.Add(-1)
+                                q.recycle(next.Ch)
+                        }</span>
+                        // 跳过已取消的节点，继续寻找下一个
+                        <span class="cov5" title="80">continue</span>
+                }
+
+                // ============ 尝试抢占等待者并分发资源 ============
+                <span class="cov9" title="7276">if atomic.CompareAndSwapPointer(&amp;q.head, unsafe.Pointer(head), unsafe.Pointer(next)) </span><span class="cov9" title="7175">{
+                        q.length.Add(-1)
+
+                        // 尝试发送资源（非阻塞）
+                        select </span>{
+                        case next.Ch &lt;- resource:<span class="cov9" title="7141">
+                                // 成功分发资源
+                                return true</span>
+                        default:<span class="cov0" title="0">
+                                // Channel 已满或关闭（理论上不应该发生）
+                                // 回收 channel 并继续寻找下一个等待者
+                                q.recycle(next.Ch)
+                                return false</span>
+                        }
+                }
+
+                // CAS 失败，有其他协程在操作，快速重试
+                // 使用渐进式退避策略
+                <span class="cov5" title="135">if attempts%10 == 0 </span><span class="cov0" title="0">{
+                        runtime.Gosched() // 每10次尝试让出CPU
+                }</span>
+        }
+
+        // 达到最大尝试次数，返回失败
+        <span class="cov0" title="0">return false</span>
+}
+
+// recycle 回收 channel 到池中（同步回收）
+// channel 容量为 1，drain + sync.Pool.Put 都是 O(1)，不需要异步
+func (q *LockFreeQueue[T]) recycle(ch chan T) <span class="cov5" title="80">{
+        select </span>{
+        case &lt;-ch:<span class="cov0" title="0"></span>
+        default:<span class="cov5" title="80"></span>
+        }
+        <span class="cov5" title="80">q.chanPool.Put(ch)</span>
+}
+
+// Remove 标记节点为已取消（延迟删除）
+func (q *LockFreeQueue[T]) Remove(w *LockFreeWaiter[T]) <span class="cov5" title="86">{
+        if w != nil &amp;&amp; w.Cancelled.CompareAndSwap(false, true) </span>{<span class="cov5" title="85">
+                // 只标记为取消，物理删除由 TryDequeue 延迟完成
+                // 这样可以避免复杂的并发删除逻辑
+        }</span>
+}
+
+// Len 返回队列长度（近似值）
+func (q *LockFreeQueue[T]) Len() int <span class="cov9" title="8081">{
+        return int(q.length.Load())
+}</span>
+
+// Clear 清空队列
+func (q *LockFreeQueue[T]) Clear() <span class="cov4" title="53">{
+        for </span><span class="cov6" title="166">{
+                head := (*LockFreeWaiter[T])(atomic.LoadPointer(&amp;q.head))
+                next := (*LockFreeWaiter[T])(atomic.LoadPointer(&amp;head.next))
+
+                if next == nil </span><span class="cov4" title="53">{
+                        return // 队列已空
+                }</span>
+
+                <span class="cov5" title="113">if atomic.CompareAndSwapPointer(&amp;q.head, unsafe.Pointer(head), unsafe.Pointer(next)) </span><span class="cov5" title="113">{
+                        q.length.Add(-1)
+                        // 关闭 channel 以通知等待者池已关闭
+                        if next.Ch != nil </span><span class="cov5" title="113">{
+                                close(next.Ch)
+                        }</span>
+                }
+        }
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

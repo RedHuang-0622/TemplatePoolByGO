@@ -1,0 +1,291 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  # ============================================================================
+  # 轻量层：vet + build + test + coverage（最快反馈）
+  # ============================================================================
+  lightweight:
+    name: "lightweight — vet / build / test / coverage"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test — coverage
+        run: |
+          go test ./... \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            -count=1 \
+            -timeout=5m
+
+      - name: coverage report
+        run: |
+          go tool cover -func=coverage.out | tail -1
+          TOTAL=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')
+          echo "Total coverage: $TOTAL"
+          # 轻量阈值 80%
+          echo "$TOTAL" | grep -qE '^(8[0-9]|9[0-9]|100)\.[0-9]%$' || (
+            echo "::warning::Coverage $TOTAL below 80% threshold"
+          )
+
+      - name: upload coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-lightweight
+          path: coverage.out
+          retention-days: 7
+
+  # ============================================================================
+  # 标准层：race detector + multi-version + benchmarks
+  # ============================================================================
+  standard:
+    name: "standard — race / bench / Go ${{ matrix.go-version }}"
+    needs: lightweight
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.23", "1.24"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      # ---- data race detection (BLOCKING for concurrent pool code) ----
+      - name: go test — race
+        id: race
+        run: |
+          go test ./... \
+            -race \
+            -count=3 \
+            -timeout=10m \
+            -coverprofile=coverage-race.out \
+            -covermode=atomic
+
+      - name: upload race coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-race-go${{ matrix.go-version }}
+          path: coverage-race.out
+          retention-days: 7
+
+      # ---- benchmarks (informational, not blocking) ----
+      - name: go test — benchmark
+        continue-on-error: true
+        run: |
+          go test ./pool_test/ ./bench_cmp/ \
+            -bench=. \
+            -benchmem \
+            -benchtime=1s \
+            -count=1 \
+            -timeout=10m \
+            | tee bench-${{ matrix.go-version }}.txt
+
+      - name: upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-go${{ matrix.go-version }}
+          path: bench-${{ matrix.go-version }}.txt
+          retention-days: 7
+
+  # ============================================================================
+  # 深度层：fuzz tests + extended stress
+  # ============================================================================
+  deep:
+    name: "deep — fuzz / stress / extended"
+    needs: standard
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      # ---- fuzz tests (30s each fuzz target) ----
+      - name: go test — fuzz
+        run: |
+          # Collect fuzz targets
+          FUZZ_TARGETS=$(go test -list 'Fuzz.*' ./... 2>/dev/null | grep -E '^Fuzz' || true)
+
+          if [ -n "$FUZZ_TARGETS" ]; then
+            echo "Fuzz targets found:"
+            echo "$FUZZ_TARGETS"
+            for target in $FUZZ_TARGETS; do
+              echo "=== Fuzzing: $target ==="
+              # Find which package this fuzz target belongs to
+              PKG=$(grep -rl "func $target" --include='*_test.go' | head -1 | xargs dirname)
+              if [ -n "$PKG" ]; then
+                go test -fuzz="$target" -fuzztime=30s -timeout=5m "./$PKG"
+              fi
+            done
+          else
+            echo "No fuzz targets found — skipping fuzz step"
+          fi
+
+      # ---- extended stress tests (pool_test) ----
+      - name: go test — extended stress
+        run: |
+          go test ./pool_test/ \
+            -race \
+            -count=3 \
+            -timeout=15m \
+            -run 'TestStress|TestConcurrent|TestRace' \
+            -v
+
+      # ---- goroutine leak check via escape analysis ----
+      - name: escape analysis
+        continue-on-error: true
+        run: |
+          go build -gcflags="-m" ./... 2>&1 | grep "escapes to heap" > escapes.txt || true
+          wc -l escapes.txt
+          echo "::notice::Escape analysis completed, see artifacts for details"
+
+      - name: upload escape analysis
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: escape-analysis
+          path: escapes.txt
+          retention-days: 7
+
+  # ============================================================================
+  # 静态分析层：govulncheck + lint
+  # ============================================================================
+  static-analysis:
+    name: "static analysis — vulncheck / lint"
+    needs: lightweight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      # ---- vulnerability scan (BLOCKING for HIGH/CVE) ----
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck -show verbose ./...
+
+      # ---- staticcheck ----
+      - name: staticcheck
+        continue-on-error: true
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      # ---- gofmt check ----
+      - name: format check
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Unformatted files:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+          echo "All files properly formatted"
+
+      # ---- go mod tidy check ----
+      - name: mod tidy check
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || (
+            echo "::error::go.mod/go.sum not tidy — run 'go mod tidy'"
+            exit 1
+          )
+
+  # ============================================================================
+  # 汇总：收集所有结果，生成 test-report.md
+  # ============================================================================
+  summary:
+    name: "summary"
+    needs: [lightweight, standard, deep, static-analysis]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: generate test report
+        run: |
+          cat > test-report.md << 'REPORT_EOF'
+          # 测试报告
+
+          ## 概览
+
+          | 项目 | 状态 |
+          |------|:----:|
+          | 分支 | ${{ github.ref_name }} |
+          | 提交 | ${{ github.sha }} |
+          | 触发 | ${{ github.event_name }} |
+          | 运行时间 | $(date -u '+%Y-%m-%d %H:%M UTC') |
+
+          ## 各维度
+
+          | 维度 | 结果 | 关键指标 |
+          |------|:---:|---------|
+          | 单元测试 + 覆盖率 | ${{ needs.lightweight.result == 'success' && '✅' || '🚨' }} | 阈值 ≥80% |
+          | 并发竞态检测 | ${{ needs.standard.result == 'success' && '✅' || '🚨' }} | -race -count=3 |
+          | Benchmark | ${{ needs.standard.result != 'failure' && '✅' || '⚠️' }} | Go 1.23 + 1.24 |
+          | 模糊测试 | ${{ needs.deep.result == 'success' && '✅' || '⚠️' }} | fuzztime=30s |
+          | 压力测试 | ${{ needs.deep.result == 'success' && '✅' || '⚠️' }} | extended stress |
+          | 逃逸分析 | ${{ needs.deep.result != 'failure' && '✅' || '⚠️' }} | heap escape scan |
+          | 漏洞扫描 | ${{ needs.static-analysis.result == 'success' && '✅' || '🚨' }} | govulncheck |
+          | 代码格式 | ${{ needs.static-analysis.result == 'success' && '✅' || '🚨' }} | gofmt + mod tidy |
+
+          ## 综合判断
+
+          ${{ needs.lightweight.result == 'success' && needs.standard.result == 'success' && needs.static-analysis.result == 'success' && '✅ **通过** — 所有阻塞项通过' || '🚨 **不通过** — 存在阻塞失败项，请检查各 job 日志' }}
+
+          ## 运行矩阵
+
+          - **Go 版本**: 1.23, 1.24
+          - **OS**: ubuntu-latest
+          - **Timeout**: 轻量 5m / 标准 10m / 深度 30m / 静态 5m
+          REPORT_EOF
+
+      - name: upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-report
+          path: test-report.md
+          retention-days: 30

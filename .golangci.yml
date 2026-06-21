@@ -1,0 +1,84 @@
+# golangci-lint configuration for TemplatePoolByGO
+# Run: golangci-lint run ./...
+
+run:
+  timeout: 5m
+  tests: true
+  go: "1.23"
+
+linters:
+  enable:
+    - errcheck      # unchecked errors
+    - gosimple      # code simplifications
+    - govet         # go vet
+    - ineffassign   # ineffectual assignments
+    - staticcheck   # static analysis
+    - unused        # unused code
+    - gofmt         # format check
+    - misspell      # common typos
+    - unconvert     # unnecessary type conversions
+    - copylocks     # copy of lock values
+    - nilerr        # nil error returns
+
+    # Concurrency-specific (critical for this pool library)
+    - gocritic      # extra checks including range-val-copy, appendAssign
+    - bodyclose     # HTTP/gRPC response body close
+    - noctx         # context.Context missing
+
+    # Optional but recommended
+    - goimports     # import formatting
+    - prealloc      # suggest slice preallocation
+    - whitespace    # blank line rules
+
+linters-settings:
+  gocritic:
+    enabled-checks:
+      - appendAssign
+      - argOrder
+      - badCall
+      - badCond
+      - captLocal
+      - caseOrder
+      - codegenComment
+      - commentFormatting
+      - defaultCaseOrder
+      - deprecatedComment
+      - dupArg
+      - dupBranchBody
+      - dupCase
+      - dupSubExpr
+      - elseif
+      - exitAfterDefer
+      - flagDeref
+      - flagName
+      - ifElseChain
+      - mapKey
+      - newDeref
+      - offBy1
+      - rangeValCopy
+      - regexpMust
+      - singleCaseSwitch
+      - sloppyLen
+      - switchTrue
+      - typeSwitchVar
+      - underef
+      - unlambda
+      - unslice
+      - valSwap
+
+  prealloc:
+    simple: true
+    range-loops: true
+    for-loops: false
+
+  misspell:
+    locale: US
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  exclude-rules:
+    # Allow unused params in interface methods (Conn[T] interface)
+    - path: model.go
+      text: "unused-parameter"

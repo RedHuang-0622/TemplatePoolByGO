@@ -1,5 +1,7 @@
 # TemplatePoolByGO
 
+[![CI](https://github.com/RedHuang-0622/TemplatePoolByGO/actions/workflows/ci.yml/badge.svg)](https://github.com/RedHuang-0622/TemplatePoolByGO/actions/workflows/ci.yml)
+
 基于 Go 泛型的通用连接池，管理 gRPC stream、数据库连接、TCP 长连接等重资源。
 
 ```bash
@@ -240,16 +242,34 @@ default:
 
 ## 性能参考
 
-测试环境：Intel i5-1155G7 @ 2.50GHz, Go 1.25, Windows 11
+测试环境：Intel i5-1155G7 @ 2.50GHz, Go 1.25.8, Windows 11
+
+### 自身性能
 
 | 场景 | ops/s | 延迟 | 说明 |
 |------|-------|------|------|
-| 纯调度 Get+Put | 6,340,000 | 193 ns | 0 allocs，池子调度开销上限 |
-| 无 sleep 高并发 (1K-20K) | 1,500,000-2,000,000 | ~630 ns | 50 预初始化连接，0 失败 |
-| 带 5ms 业务延迟 (100K) | 1,713,000 | +629 ns 池子开销 | 业务延迟主导 |
+| 纯调度 Get+Put | 14,700,000 | 200 ns | 0 allocs，池子调度开销上限 |
+| 无 sleep 高并发 (6K-100K) | 1,000,000-1,500,000 | ~900 ns | 50 预初始化连接，0 失败 |
+| 带 5ms 业务延迟 (≤10K) | 500,000-1,800,000 | +~200 ns 池子开销 | 业务延迟主导 |
+| 动态扩容 (5→满足300并发) | 1,100,000 | 898 ns | 含 2ms 创建延迟 |
 | Actor SendAsync | 4,800,000 | 370 ns | 扩容信号发送开销 |
 
-详细测试报告见 [docs/test_result/](docs/test_result/)。
+### 横向对比（vs 市面主流 Go 池化库）
+
+| 场景 | TemplatePoolByGO | [silenceper/pool](https://github.com/silenceper/pool) | Raw chan |
+|------|:---:|:---:|:---:|
+| 纯调度 Get/Put | **200 ns** (0 alloc) | 346 ns (48B, 1 alloc) | 106 ns |
+| 高竞争 (500:50) | **511 ns** | 3,457 ns | 630 ns |
+| 动态扩容 (5→500) | **898 ns** | 4,488 ns | N/A |
+| 并发 1000 扫测 | **718 ns** | 5,021 ns | 476 ns |
+
+| 场景 | TemplatePoolByGO | [ants/v2](https://github.com/panjf2000/ants) (13.6k⭐) |
+|------|:---:|:---:|
+| Goroutine 提交开销 | 370 ns (SendAsync) | 466 ns (Submit) |
+
+> **泛型的价值**：silenceper/pool 每次 Get 产生 48B 堆分配（`interface{}` 装箱），TemplatePoolByGO 零分配。高竞争下 TemplatePoolByGO 快 **6.8×**，动态扩容快 **5.0×**，千并发快 **7.0×**。
+
+详细测试报告见 [docs/test_result/test-report-20260621_comparison.md](docs/test_result/test-report-20260621_comparison.md)。
 
 ---
 
