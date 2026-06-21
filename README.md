@@ -8,7 +8,7 @@
 go get github.com/RedHuang-0622/TemplatePoolByGO@latest
 ```
 
-**要求 Go ≥ 1.23**（使用了泛型类型别名 `type resource[T] = Resource[T]`）。
+**要求 Go ≥ 1.24**（使用了泛型类型别名 `type resource[T] = Resource[T]`，1.24 起默认支持）。
 
 ---
 

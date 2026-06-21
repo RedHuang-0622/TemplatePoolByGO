@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.24"
           cache: true
 
       - name: go vet
@@ -72,7 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ["1.23", "1.24"]
+        go-version: ["1.24", "1.25"]
 
     steps:
       - uses: actions/checkout@v4
@@ -135,7 +135,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.24"
           cache: true
 
       # ---- fuzz tests (30s each fuzz target) ----
@@ -197,7 +197,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.24"
           cache: true
 
       # ---- vulnerability scan (BLOCKING for HIGH/CVE) ----
@@ -264,7 +264,7 @@ jobs:
           |------|:---:|---------|
           | 单元测试 + 覆盖率 | ${{ needs.lightweight.result == 'success' && '✅' || '🚨' }} | 阈值 ≥80% |
           | 并发竞态检测 | ${{ needs.standard.result == 'success' && '✅' || '🚨' }} | -race -count=3 |
-          | Benchmark | ${{ needs.standard.result != 'failure' && '✅' || '⚠️' }} | Go 1.23 + 1.24 |
+          | Benchmark | ${{ needs.standard.result != 'failure' && '✅' || '⚠️' }} | Go 1.24 + 1.25 |
           | 模糊测试 | ${{ needs.deep.result == 'success' && '✅' || '⚠️' }} | fuzztime=30s |
           | 压力测试 | ${{ needs.deep.result == 'success' && '✅' || '⚠️' }} | extended stress |
           | 逃逸分析 | ${{ needs.deep.result != 'failure' && '✅' || '⚠️' }} | heap escape scan |
@@ -277,7 +277,7 @@ jobs:
 
           ## 运行矩阵
 
-          - **Go 版本**: 1.23, 1.24
+          - **Go 版本**: 1.24, 1.25
           - **OS**: ubuntu-latest
           - **Timeout**: 轻量 5m / 标准 10m / 深度 30m / 静态 5m
           REPORT_EOF
