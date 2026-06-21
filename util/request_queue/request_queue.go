@@ -1,3 +1,10 @@
+// Package request_queue 提供基于 Michael-Scott 无锁队列的高性能等待队列。
+//
+// 核心特性：
+//   - 无锁入队：CAS 链接节点，无互斥锁开销
+//   - channel 池化：通过 sync.Pool 复用 channel，减少内存分配
+//   - 延迟删除：取消操作只标记节点，物理删除由出队方完成
+//   - 适用场景：连接池等待队列、生产者-消费者分发等高性能场景
 package request_queue
 
 import (
@@ -7,13 +14,21 @@ import (
 	"unsafe"
 )
 
+// LockFreeWaiter 表示队列中的一个等待者。
+//
+// Ch 为容量 1 的缓冲 channel，供分发方非阻塞投递资源。
+// Cancelled 标记该等待者是否已被取消（延迟删除）。
 type LockFreeWaiter[T any] struct {
 	Ch        chan T
 	next      unsafe.Pointer
 	Cancelled atomic.Bool
-	delivered atomic.Bool // 新增：资源已投递，Ch 可能还没被读
+	delivered atomic.Bool // 资源已投递，Ch 可能还没被读
 }
 
+// LockFreeQueue 基于 Michael-Scott 算法的无锁 FIFO 队列。
+//
+// 内部通过 CAS 操作维护 head/tail 指针，支持多生产者/多消费者并发访问。
+// 使用 sync.Pool 回收 channel，降低 GC 压力。
 type LockFreeQueue[T any] struct {
 	head     unsafe.Pointer
 	tail     unsafe.Pointer
@@ -21,6 +36,9 @@ type LockFreeQueue[T any] struct {
 	chanPool sync.Pool
 }
 
+// NewLockFreeQueue 创建一个新的空队列。
+//
+// 内部自动初始化哨兵节点和 channel 对象池。
 func NewLockFreeQueue[T any]() *LockFreeQueue[T] {
 	q := &LockFreeQueue[T]{}
 	q.chanPool.New = func() interface{} {
