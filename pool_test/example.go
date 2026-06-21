@@ -1,3 +1,8 @@
+// Package pool_test 提供连接池的外部测试示例与可执行文档。
+//
+// 包含：
+//   - ExampleConn / ExampleConnControl：Conn[T] 接口的示例实现
+//   - ExampleGet / ExamplePut / ExampleStats：Go 可测试示例函数
 package pool_test
 
 import (
@@ -27,6 +32,7 @@ var poolConfig = pool.PoolConfig{
 
 // ================= ExampleConn 定义 ================= //
 
+// ExampleConn 示例连接类型，包含一个原子计数器用于验证连接状态。
 type ExampleConn struct {
 	Num atomic.Int64
 }
@@ -43,20 +49,25 @@ func (e *ExampleConn) ping() error {
 
 // ================= ExampleConnControl 定义（实现 Conn[T] 接口）================= //
 
+// ExampleConnControl 实现 pool.Conn[*ExampleConn] 接口的示例控制器。
 type ExampleConnControl struct{}
 
+// Create 创建一个新的 ExampleConn 连接。
 func (ecc *ExampleConnControl) Create() (*ExampleConn, error) {
 	return &ExampleConn{}, nil
 }
 
+// Close 关闭 ExampleConn 连接（空操作示例）。
 func (ecc *ExampleConnControl) Close(_ *ExampleConn) error {
 	return nil
 }
 
+// Reset 重置 ExampleConn 的内部计数器。
 func (ecc *ExampleConnControl) Reset(c *ExampleConn) error {
 	return c.reset()
 }
 
+// Ping 通过递增计数器验证连接存活。
 func (ecc *ExampleConnControl) Ping(c *ExampleConn) error {
 	return c.ping()
 }

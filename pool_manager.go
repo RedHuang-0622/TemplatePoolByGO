@@ -9,11 +9,16 @@ import (
 	"github.com/RedHuang-0622/TemplatePoolByGO/util/request_queue"
 )
 
+// PoolManagerState Actor 持有的状态，包含配置与连接控制接口。
 type PoolManagerState[T any] struct {
 	config      PoolConfig
 	connControl Conn[T]
 }
 
+// PoolManagerActor 连接池管理器 Actor，负责处理扩缩容逻辑。
+//
+// 继承 BaseActor，运行在 Closure Actor 模型的事件循环中，
+// 所有状态变更通过消息传递保证并发安全。
 type PoolManagerActor[T any] struct {
 	closure.BaseActor[PoolManagerState[T]]
 	config          PoolConfig
@@ -26,6 +31,10 @@ type PoolManagerActor[T any] struct {
 	initialized     atomic.Bool
 }
 
+// NewPoolManagerActor 创建一个新的 PoolManagerActor 实例。
+//
+// 参数 totalSize 和 expanding 为连接池共享的原子计数器，
+// wq 为连接池的无锁等待队列（用于扩容后直接分发给等待者）。
 func NewPoolManagerActor[T any](
 	config PoolConfig,
 	connControl Conn[T],
@@ -42,6 +51,7 @@ func NewPoolManagerActor[T any](
 	}
 }
 
+// Init 实现 Actor 接口，返回 Actor 的初始状态。
 func (a *PoolManagerActor[T]) Init() PoolManagerState[T] {
 	return PoolManagerState[T]{
 		config:      a.config,

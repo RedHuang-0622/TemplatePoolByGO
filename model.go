@@ -12,6 +12,10 @@ import (
 	"github.com/RedHuang-0622/TemplatePoolByGO/util/request_queue"
 )
 
+// Pool 泛型连接池，管理同类型连接的创建、分配、回收与销毁。
+//
+// 内部通过 Actor 模式实现并发安全的扩缩容，使用无锁等待队列
+// 处理资源不足时的请求排队。
 type Pool[T any] struct {
 	resources        chan *resource[T]
 	inUse            atomic.Int64
@@ -31,6 +35,16 @@ var (
 	ErrPoolBusy = errors.New("connection pool is busy: maximum capacity reached and wait queue is full")
 )
 
+// NewPool 创建一个新的连接池实例。
+//
+// 参数 config 指定池的各项配置（推荐通过 DefaultPoolConfig 获取默认值后修改），
+// connControl 提供连接的具体生命周期实现。
+//
+// 池创建后会立即：
+//   - 预创建 MinSize 个连接
+//   - 启动 Actor 事件循环（处理扩缩容消息）
+//   - 若配置了 PingInterval，启动定期心跳检测
+//   - 若配置了 MonitorInterval，启动定期扩缩容检查
 func NewPool[T any](config PoolConfig, connControl Conn[T]) *Pool[T] {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -220,6 +234,17 @@ func (p *Pool[T]) preInit(count int64, cc Conn[T]) {
 	})
 }
 
+// Get 从连接池获取一个可用连接。
+//
+// 获取流程：
+//  1. 优先从空闲 channel 直接获取
+//  2. 若无空闲连接，进入等待队列排队
+//  3. 等待期间支持 context 取消/超时
+//  4. 若配置 ReconnectOnGet，取到连接后验证存活并自动重连
+//
+// 可能的错误：
+//   - ErrPoolBusy：等待队列已满
+//   - context.Canceled / context.DeadlineExceeded：调用方取消或超时
 func (p *Pool[T]) Get(ctx context.Context) (*resource[T], error) {
 	select {
 	case r := <-p.resources:
@@ -277,6 +302,12 @@ func (p *Pool[T]) Get(ctx context.Context) (*resource[T], error) {
 	}
 }
 
+// Put 将连接归还给连接池。
+//
+// 归还时会先调用 Conn.Reset 重置连接状态。若 Reset 失败则关闭连接并触发缩容补偿。
+// 归还后优先将连接直接分发给等待队列中的请求者，无等待者则放回空闲 channel。
+//
+// res 为 nil 时直接返回 nil（安全处理）。
 func (p *Pool[T]) Put(res *resource[T]) error {
 	if res == nil {
 		return nil
@@ -335,6 +366,15 @@ func (p *Pool[T]) validateAndReturn(r *resource[T]) (*resource[T], error) {
 	return r, nil
 }
 
+// Close 关闭连接池，释放所有资源。
+//
+// 关闭步骤：
+//  1. 取消内部 context，停止所有后台协程
+//  2. 清空等待队列
+//  3. 停止 Actor 并等待其完全退出
+//  4. 排空并关闭所有空闲连接
+//
+// Close 是幂等的，但关闭后不应再调用 Get/Put。
 func (p *Pool[T]) Close() {
 	p.cancel()
 	p.waitQueue.Clear()
@@ -349,6 +389,15 @@ func (p *Pool[T]) Close() {
 	}
 }
 
+// Stats 返回连接池的当前统计信息。
+//
+// 返回的 map 包含以下键：
+//   - total_size：当前总连接数
+//   - pool_available：空闲可用连接数
+//   - pool_in_use：正在使用的连接数
+//   - waiting_count：等待队列长度
+//   - expanding：正在扩容中的连接数
+//   - buffer_cap：空闲 channel 缓冲区容量
 func (p *Pool[T]) Stats(ctx context.Context) (map[string]int64, error) {
 	return map[string]int64{
 		"total_size":     p.totalSize.Load(),

@@ -1,3 +1,27 @@
+// Package closure 提供一个基于 Actor 模型的类型安全消息处理框架。
+//
+// 核心概念：
+//   - Actor[T]：定义 Actor 的生命周期接口（Init/OnStart/OnStop）
+//   - BaseActor[T]：提供默认空实现，方便嵌入复用
+//   - Closure[T, A]：Actor 运行时容器，封装消息队列、事件循环和状态管理
+//
+// 使用模式：
+//
+//	// 1. 定义自定义 Actor
+//	type MyActor struct { closure.BaseActor[MyState] }
+//	func (a *MyActor) Init() MyState { return MyState{...} }
+//
+//	// 2. 创建 Closure
+//	c := closure.New[MyState](&MyActor{}, closure.WithInboxSize(1000))
+//
+//	// 3. 同步调用
+//	result, err := c.Call(func(a *MyActor, s *MyState) any { return "result" })
+//
+//	// 4. 异步发送
+//	c.Send(func(a *MyActor, s *MyState) { s.counter++ })
+//
+//	// 5. 停止
+//	c.StopAndWait()
 package closure
 
 import (
@@ -20,13 +44,17 @@ type Actor[T any] interface {
 // BaseActor 提供默认实现
 type BaseActor[T any] struct{}
 
+// Init 返回类型的零值状态，供嵌入者覆盖。
 func (b BaseActor[T]) Init() T {
 	var zero T
 	return zero
 }
 
+// OnStart 在 Actor 启动时调用，默认无操作，供嵌入者覆盖。
 func (b BaseActor[T]) OnStart(state *T) {}
-func (b BaseActor[T]) OnStop(state *T)  {}
+
+// OnStop 在 Actor 停止时调用，默认无操作，供嵌入者覆盖。
+func (b BaseActor[T]) OnStop(state *T) {}
 
 // Closure 是一个类型安全的 Actor 实现
 type Closure[T any, A Actor[T]] struct {
@@ -57,6 +85,8 @@ func WithInboxSize(size int) Option {
 		c.inboxSize = size
 	}
 }
+
+// GetActor 返回 Closure 内部持有的 Actor 实例。
 func (c *Closure[T, A]) GetActor() A {
 	return c.actor
 }
