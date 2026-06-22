@@ -1,10 +1,10 @@
 // compare_test.go — 横向对比：TemplatePoolByGO vs 市面主流 Go 连接池/协程池
 //
 // 对比对象（均为生产验证的真实库）：
-//   1. TemplatePoolByGO (本项目)              — Actor扩缩容 + 无锁等待队列 + 泛型
-//   2. silenceper/pool (github.com/silenceper/pool) — 通用连接池，~500 stars
-//   3. panjf2000/ants/v2 (github.com/panjf2000/ants/v2) — Go 最主流协程池，~13.6k stars
-//   4. Raw chan 基线                            — Go channel 原生原语
+//  1. TemplatePoolByGO (本项目)              — Actor扩缩容 + 无锁等待队列 + 泛型
+//  2. silenceper/pool (github.com/silenceper/pool) — 通用连接池，~500 stars
+//  3. panjf2000/ants/v2 (github.com/panjf2000/ants/v2) — Go 最主流协程池，~13.6k stars
+//  4. Raw chan 基线                            — Go channel 原生原语
 package bench_cmp
 
 import (
@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/panjf2000/ants/v2"
 	pool "github.com/RedHuang-0622/TemplatePoolByGO"
+	"github.com/panjf2000/ants/v2"
 	sp "github.com/silenceper/pool"
 )
 

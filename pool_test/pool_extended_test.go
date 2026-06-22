@@ -502,13 +502,13 @@ func TestResourceFields(t *testing.T) {
 
 func TestReconnectOnGetDisabled(t *testing.T) {
 	config := PoolConfig{
-		MinSize:          3,
-		MaxSize:          10,
-		MaxRetries:       2,
-		RetryInterval:    10 * time.Millisecond,
-		ReconnectOnGet:   false, // disabled
-		PingInterval:     0,
-		MonitorInterval:  0,
+		MinSize:         3,
+		MaxSize:         10,
+		MaxRetries:      2,
+		RetryInterval:   10 * time.Millisecond,
+		ReconnectOnGet:  false, // disabled
+		PingInterval:    0,
+		MonitorInterval: 0,
 	}
 
 	// Use pingErr to verify Ping is NOT called (because ReconnectOnGet=false)

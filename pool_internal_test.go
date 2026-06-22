@@ -32,10 +32,10 @@ func (c *testConn) Ping(_ *testConn) error {
 }
 
 type testConnControl struct {
-	createErr  error
-	createOK   atomic.Bool
-	failCount  atomic.Int32
-	failAt     int32 // fail on this Create call, 0 means never
+	createErr error
+	createOK  atomic.Bool
+	failCount atomic.Int32
+	failAt    int32 // fail on this Create call, 0 means never
 }
 
 func (c *testConnControl) Reset(conn *testConn) error { return conn.Reset(conn) }
