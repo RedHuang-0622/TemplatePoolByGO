@@ -1,0 +1,13 @@
+# TemplatePoolByGO — EOL normalization
+# Go toolchain (gofmt, go vet, etc.) always outputs LF.
+# Force LF for all Go files to avoid CRLF/LF phantom diffs on Windows.
+
+* text=auto
+
+*.go      text eol=lf
+*.mod     text eol=lf
+*.sum     text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.md      text eol=lf
+*.json    text eol=lf
