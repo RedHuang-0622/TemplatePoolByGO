@@ -74,6 +74,31 @@ jobs:
       matrix:
         go-version: ["1.24", "1.25"]
 
+    # ---- 外部服务：MySQL + Redis（benchmark 依赖） ----
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: Hzr040622
+          MYSQL_DATABASE: bench
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -81,6 +106,20 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
+
+      # ---- 安装 DB 客户端 + MySQL 建表 + Redis 验证 ----
+      - name: setup services
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client redis-tools
+          mysql -h 127.0.0.1 -u root -pHzr040622 bench -e "
+            CREATE TABLE IF NOT EXISTS bench_kv (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              a TEXT,
+              b TEXT,
+              c TEXT
+            ) ENGINE=InnoDB;
+          "
+          redis-cli -h 127.0.0.1 ping
 
       # ---- data race detection (BLOCKING for concurrent pool code) ----
       - name: go test — race
